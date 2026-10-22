@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -179,19 +180,174 @@ def _bytes(txt) -> Optional[int]:
     return int(float(m.group(1)) * mult)
 
 
-def start_print(remote_file: str) -> Dict[str, Any]:
+# ----------------------------------------------------------------- preheat
+# Old Marlin (e.g. Creality's stock Ender-2 "Marlin V1") has no HOST_KEEPALIVE: during M190/M109 it stays
+# silent for minutes, ESP3D's stream sees no "ok", times out and drops the job while the heaters stay on.
+# So PrintBridge heats the printer itself first (M140/M104 + M105 polling) and only then starts the stream;
+# the file's M190/M109 then return within seconds.
+
+PREHEAT_TIMEOUT_S = 15 * 60
+PREHEAT_POLL_S = 3.0
+HOTEND_TOLERANCE = 2.0
+BED_TOLERANCE = 1.0
+
+_preheat_lock = threading.Lock()
+_preheat: Dict[str, Any] = {"state": "idle"}  # idle | heating | started | failed | cancelled
+_preheat_cancel = threading.Event()
+
+_RE_BED = re.compile(r"^\s*M1(?:40|90)\s+[^;]*?\bS\s*([\d.]+)", re.I)
+_RE_HOT = re.compile(r"^\s*M10[49]\s+[^;]*?\bS\s*([\d.]+)", re.I)
+_RE_MOVE = re.compile(r"^\s*G[01]\b[^;]*\bE\s*[\d.]+", re.I)
+
+
+def _targets_from_lines(lines) -> Dict[str, float]:
+    """First bed / hotend target set before the first extruding move (the start G-code)."""
+    out: Dict[str, float] = {}
+    for line in lines:
+        if "bed" not in out:
+            m = _RE_BED.match(line)
+            if m:
+                out["bed"] = float(m.group(1))
+        if "hotend" not in out:
+            m = _RE_HOT.match(line)
+            if m:
+                out["hotend"] = float(m.group(1))
+        if len(out) == 2 or _RE_MOVE.match(line):
+            break
+    return out
+
+
+def _gcode_targets(p: ESP3D, remote_file: str) -> Dict[str, float]:
+    name = os.path.basename(remote_file)
+    gdir = _dirs(load_config())["gcode"]
+    base = os.path.splitext(name)[0]
+    for cand in (name, base + ".min.gcode"):
+        path = os.path.join(gdir, cand)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                t = _targets_from_lines(line for _, line in zip(range(400), f))
+            if t:
+                t["source"] = path
+                return t
+    # Not sliced on this PC: read the head of the file from the ESP3D file system.
+    try:
+        r = p.s.get(p.url + "/" + remote_file.lstrip("/"), stream=True, timeout=p.timeout)
+        if r.ok:
+            head = b""
+            for chunk in r.iter_content(4096):
+                head += chunk
+                if len(head) >= 16384:
+                    break
+            r.close()
+            t = _targets_from_lines(head.decode("utf-8", "ignore").splitlines())
+            if t:
+                t["source"] = "esp3d:" + remote_file
+                return t
+    except Exception:
+        pass
+    return {}
+
+
+def _set_preheat(**kw):
+    with _preheat_lock:
+        _preheat.update(kw)
+
+
+def _preheat_and_start(p: ESP3D, remote_file: str, bed: float, hotend: float) -> Dict[str, Any]:
+    t0 = time.time()
+    _set_preheat(state="heating", file=remote_file, bed_target=bed, hotend_target=hotend, started_at=t0,
+                 error=None, temperatures=None)
+    try:
+        if bed > 0:
+            p.send_gcode("M140 S%g" % bed)
+        if hotend > 0:
+            p.send_gcode("M104 S%g" % hotend)
+        while True:
+            if _preheat_cancel.is_set():
+                _set_preheat(state="cancelled")
+                return {"ok": False, "error": "Preheat cancelled"}
+            if time.time() - t0 > PREHEAT_TIMEOUT_S:
+                for g in ("M104 S0", "M140 S0"):
+                    try:
+                        p.send_gcode(g)
+                    except Exception:
+                        pass
+                msg = "Printer did not reach temperature within %d min (heaters turned off)" % (
+                    PREHEAT_TIMEOUT_S // 60)
+                _set_preheat(state="failed", error=msg)
+                return {"ok": False, "error": msg}
+            try:
+                temps = p.temperatures()
+            except Exception as e:
+                temps = {"error": str(e)}
+            _set_preheat(temperatures=temps, elapsed_s=int(time.time() - t0))
+            if "hotend" in temps:
+                hot_ok = hotend <= 0 or temps["hotend"] >= hotend - HOTEND_TOLERANCE
+                bed_ok = bed <= 0 or temps.get("bed", 0.0) >= bed - BED_TOLERANCE
+                if hot_ok and bed_ok:
+                    break
+            _preheat_cancel.wait(PREHEAT_POLL_S)
+        ans = p.start_print(remote_file)
+        time.sleep(1.5)
+        _set_preheat(state="started", heat_time_s=int(time.time() - t0))
+        return {"ok": True, "answer": ans, "heat_time_s": int(time.time() - t0), "job": p.stream_status()}
+    except Exception as e:
+        _set_preheat(state="failed", error=str(e))
+        return {"ok": False, "error": str(e)}
+
+
+def preheat_status() -> Dict[str, Any]:
+    with _preheat_lock:
+        return dict(_preheat)
+
+
+def start_print(remote_file: str, preheat: bool = True, wait: bool = False) -> Dict[str, Any]:
+    """Heat the printer to the file's start temperatures, then start the ESP3D stream.
+    wait=False (MCP server): heating runs in a background thread and this returns at once;
+    wait=True (CLI, short-lived process): blocks until the stream has started."""
+    if not remote_file.startswith("/"):
+        remote_file = "/" + remote_file
     p = printer()
     st = p.stream_status()
-    if str(st.get("status", "")).lower().startswith("processing"):
+    if str(st.get("status", "")).lower() in ("processing", "pause"):
         return {"ok": False, "error": "A print is already running", "job": st}
-    ans = p.start_print(remote_file)
-    time.sleep(1.5)
-    return {"ok": True, "answer": ans, "job": p.stream_status()}
+    if preheat_status().get("state") == "heating":
+        return {"ok": False, "error": "Already preheating for a print", "preheat": preheat_status()}
+
+    targets = _gcode_targets(p, remote_file) if preheat else {}
+    if not targets:
+        ans = p.start_print(remote_file)
+        time.sleep(1.5)
+        out = {"ok": True, "answer": ans, "job": p.stream_status()}
+        if preheat:
+            out["note"] = "No start temperatures found in the G-code; started without preheating."
+        return out
+
+    bed, hotend = targets.get("bed", 0.0), targets.get("hotend", 0.0)
+    _preheat_cancel.clear()
+    if wait:
+        return _preheat_and_start(p, remote_file, bed, hotend)
+    _set_preheat(state="heating", file=remote_file, bed_target=bed, hotend_target=hotend,
+                 started_at=time.time(), error=None, temperatures=None)
+    threading.Thread(target=_preheat_and_start, args=(p, remote_file, bed, hotend), daemon=True,
+                     name="printbridge-preheat").start()
+    return {"ok": True, "state": "heating",
+            "message": "Heating to bed %g C / hotend %g C; the print starts automatically when reached. "
+                       "Check print_progress." % (bed, hotend),
+            "targets": targets}
 
 
 def print_progress() -> Dict[str, Any]:
+    pre = preheat_status()
+    if pre.get("state") == "heating":
+        return {"job": {"status": "preheating", "file": pre.get("file")},
+                "temperatures": pre.get("temperatures"),
+                "targets": {"bed": pre.get("bed_target"), "hotend": pre.get("hotend_target")},
+                "elapsed_s": pre.get("elapsed_s", 0)}
     p = printer()
     out = {"job": p.stream_status()}
+    if pre.get("state") in ("failed", "cancelled"):
+        out["preheat"] = {"state": pre["state"], "error": pre.get("error")}
     try:
         busy = str(out["job"].get("status", "")).lower() in ("processing", "pause")
         out["temperatures"] = p.temperatures(passive=busy)
@@ -205,6 +361,14 @@ def control_print(action: str) -> Dict[str, Any]:
     p = printer()
     if action not in ("pause", "resume", "cancel"):
         return {"ok": False, "error": "action must be pause, resume or cancel"}
+    if action == "cancel" and preheat_status().get("state") == "heating":
+        _preheat_cancel.set()
+        for g in ("M104 S0", "M140 S0"):
+            try:
+                p.send_gcode(g)
+            except Exception:
+                pass
+        return {"ok": True, "answer": "Preheat cancelled, heaters off"}
     ans = p.stream_action("ABORT" if action == "cancel" else action)
     if action == "cancel":
         # stop heaters / fan, lift and park like Cura's end g-code would

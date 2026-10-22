@@ -72,7 +72,10 @@ def upload_gcode(gcode_path: str, remote_name: Optional[str] = None) -> Dict[str
 @mcp.tool()
 def start_print(remote_file: str, confirm: bool = False) -> Dict[str, Any]:
     """Start printing a G-code file already uploaded to ESP3D. Requires confirm=True, which you may only set
-    after the user explicitly approved this exact print in the conversation."""
+    after the user explicitly approved this exact print in the conversation.
+    PrintBridge first heats bed and hotend to the file's start temperatures (M140/M104 + polling), then
+    starts the stream, so old Marlin firmware without host keepalive does not drop the job during M190/M109.
+    Returns at once with state "heating"; print_progress shows "preheating" until the print begins."""
     if not confirm:
         return {"ok": False, "error": "Ask the user to confirm the print first, then call again with confirm=True."}
     return core.start_print(remote_file)

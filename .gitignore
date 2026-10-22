@@ -11,3 +11,4 @@ config.json
 gcode/
 models/
 *.gcode
+!firmware/*.bin

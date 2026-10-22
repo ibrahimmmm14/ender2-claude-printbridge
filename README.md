@@ -23,7 +23,9 @@ uploads the G-code to the printer and starts the print **only after you confirm*
 
 | Folder | What it is |
 |---|---|
+| `firmware/` | **ESP32-S3 firmware** (ESP3D + built-in Tailscale): full flash image and OTA app image, with flashing guide. |
 | `printbridge/` | The MCP server + CLI (Python). Talks to ESP3D, slices with CuraEngine, downloads models. |
+| `install.ps1` / `install.bat` | One-click Windows installer: Python, venv, config and Claude Desktop registration. |
 | `cura-plugin/ESP3DPrinter/` | A Cura plugin: **"Print via Wi-Fi"** button + Monitor tab (temperatures, progress, pause/resume/cancel) for an ESP3D printer. |
 | `cura-profile/` | Ender-2 machine settings used for slicing. |
 | `examples/` | A 20 mm calibration cube for a first test. |
@@ -53,7 +55,19 @@ uploads the G-code to the printer and starts the print **only after you confirm*
 
 ## Setup
 
+### 0. Flash the ESP32-S3
+
+```bash
+esptool --chip esp32s3 --baud 921600 write-flash 0x0 firmware/ESP3D_Tailscale_PrintBridge_FULL_0x0.bin
+```
+Then set Wi-Fi and the Tailscale auth key. See [`firmware/README.md`](firmware/README.md).
+
 ### 1. PrintBridge (MCP server)
+
+**Quick way:** run `install.bat` (or right-click `install.ps1` → *Run with PowerShell*). It installs everything
+into `%USERPROFILE%\PrintBridge`, asks for the printer address and registers the server in Claude Desktop.
+
+**Manual way:**
 
 ```powershell
 git clone https://github.com/ibrahimmmm14/ender2-claude-printbridge.git

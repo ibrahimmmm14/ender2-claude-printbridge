@@ -1,0 +1,10 @@
+{
+  "printer_url": "http://192.168.0.10",
+  "printer_ws_port": 8282,
+  "esp3d_user": "admin",
+  "esp3d_password": "",
+  "workdir": "",
+  "cura_install": "",
+  "cura_config": "",
+  "cura_machine": ""
+}

@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Local settings (contains your printer address / password)
+config.json
+
+# Generated files
+gcode/
+models/
+*.gcode

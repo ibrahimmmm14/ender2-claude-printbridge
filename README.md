@@ -56,7 +56,7 @@ uploads the G-code to the printer and starts the print **only after you confirm*
 ### 1. PrintBridge (MCP server)
 
 ```powershell
-git clone https://github.com/<your-user>/ender2-claude-printbridge.git
+git clone https://github.com/ibrahimmmm14/ender2-claude-printbridge.git
 cd ender2-claude-printbridge
 python -m venv venv
 venv\Scripts\pip install -r requirements.txt

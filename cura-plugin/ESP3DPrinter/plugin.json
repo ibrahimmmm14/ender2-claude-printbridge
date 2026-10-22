@@ -1,0 +1,9 @@
+{
+    "name": "ESP3D Wi-Fi Printer",
+    "author": "Ibrahim Moawad",
+    "version": "1.0.0",
+    "description": "Send G-code to a Marlin printer over Wi-Fi through an ESP3D 3.x board, start prints on confirmation, and see temperatures and print progress in the Monitor tab.",
+    "api": 8,
+    "supported_sdk_versions": ["8.0.0"],
+    "i18n-catalog": "cura"
+}

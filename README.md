@@ -48,7 +48,7 @@ uploads the G-code to the printer and starts the print **only after you confirm*
 | `inspect_model` | Size, volume, and whether it fits the 150 × 150 × 200 mm bed |
 | `slice_model` | Slices with CuraEngine (layer height, infill, supports, adhesion, scale, rotation, raw Cura keys) |
 | `upload_gcode` | Uploads G-code to the ESP3D storage |
-| `start_print` | Starts a print — **requires `confirm=True`, only after the user approves** |
+| `start_print` | Starts a print — **requires `confirm=True`, only after the user approves**. Preheats bed and hotend first, then streams the file |
 | `print_progress` / `control_print` | Progress, pause / resume / cancel |
 | `send_gcode` | Single G-code command (blocked while printing unless forced) |
 | `list_printer_files` / `delete_printer_file` | Manage files on the board |
@@ -117,6 +117,10 @@ Copy `cura-plugin/ESP3DPrinter` into your Cura plugins folder
 
 - Claude can never start a print without explicit confirmation (`start_print` refuses without `confirm=True`).
 - Manual G-code is blocked while a file is streaming, so it can't break the print.
+- `start_print` heats the bed and hotend to the file's start temperatures (`M140`/`M104` + `M105` polling) before
+  streaming. Old firmware such as Creality's stock Ender-2 Marlin has no host keepalive (`M113` is ignored), so
+  during a long `M190`/`M109` ESP3D got no `ok`, timed out and dropped the job with the heaters still on.
+  If the temperatures are not reached within 15 minutes, the heaters are turned off.
 - Watch the first layer, and don't leave the printer unattended for long.
 
 ## License

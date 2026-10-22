@@ -76,7 +76,7 @@ def _run(a):
     elif a.cmd == "print":
         if not a.yes:
             return {"error": "Refusing to start without --yes (confirm the print first)."}
-        r = core.start_print(a.remote_file)
+        r = core.start_print(a.remote_file, wait=True)
     elif a.cmd == "progress":
         r = core.print_progress()
     elif a.cmd in ("pause", "resume", "cancel"):
